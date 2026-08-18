@@ -1,11 +1,11 @@
 # GA4 Analytics MCP
 
-Personal Google Analytics 4 connector for **Claude.ai Custom Connectors**. One Google account, one MCP server, deployed on Vercel.
+Personal Google Analytics 4 connector for **Claude.ai Custom Connectors**, hosted on **Google Cloud Run**.
 
 ```text
 Claude.ai Custom Connector
-  → https://<VERCEL_PROJECT_NAME>.vercel.app/ga4mcp
-  → Vercel Streamable HTTP MCP
+  → https://ga4-mcp-xxxxx-uc.a.run.app/ga4mcp
+  → Cloud Run
   → Google Analytics Data API
   → your GA4 properties
 ```
@@ -14,7 +14,7 @@ There is no local stdio server, no `npx` requirement, and no `claude_desktop_con
 
 Two authentication layers stay separate:
 
-1. **Claude → MCP:** MCP OAuth (CIMD / DCR / optional Advanced Settings client)
+1. **Claude → MCP:** MCP OAuth (CIMD / DCR)
 2. **MCP → Google:** Google OAuth refresh token stored in `GOOGLE_REFRESH_TOKEN`
 
 ## MCP tools
@@ -49,97 +49,186 @@ npm test
 npm run build
 ```
 
-Claude.ai cannot reach `localhost`. Deploy to Vercel before adding the Custom Connector.
+Claude.ai cannot reach `localhost`. Deploy to Cloud Run before adding the Custom Connector.
 
-## Google Cloud setup
+## Google Cloud setup (one project)
 
-This is only so **the MCP server** can read your GA4 data. It is not the Claude.ai connector OAuth client.
+Use the same Google Cloud project for APIs, OAuth, and Cloud Run.
 
-1. Create or select a Google Cloud project.
-2. Enable [Google Analytics Data API](https://console.cloud.google.com/flows/enableapi?apiid=analyticsdata.googleapis.com).
-3. Enable [Google Analytics Admin API](https://console.cloud.google.com/flows/enableapi?apiid=analyticsadmin.googleapis.com).
-4. Configure the OAuth consent screen (External for personal Gmail). Publish to Production so refresh tokens do not expire after 7 days.
-5. Create a **Web application** OAuth client.
-6. Authorized redirect URIs:
+### 1. Install and sign in
+
+1. Install the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install).
+2. Run:
+
+```powershell
+gcloud auth login
+gcloud auth application-default login
+```
+
+3. Create or select a project in [Google Cloud Console](https://console.cloud.google.com/).
+
+```powershell
+gcloud config set project YOUR_PROJECT_ID
+```
+
+### 2. Enable APIs
+
+```powershell
+.\scripts\cloud-run-setup.ps1 -ProjectId YOUR_PROJECT_ID -Region us-central1
+```
+
+This enables:
+
+- Cloud Run
+- Cloud Build
+- Artifact Registry
+- Google Analytics Data API
+- Google Analytics Admin API
+
+Or enable them in Console: **APIs & Services → Library**.
+
+### 3. OAuth consent and web client
+
+This Google OAuth client is only so **Cloud Run** can read your GA4 data. It is not the Claude.ai Advanced Settings client.
+
+1. Open **APIs & Services → OAuth consent screen**.
+2. User type: **External** for a personal Gmail account.
+3. App name: `GA4 MCP`.
+4. Add yourself as a test user if you stay in Testing.
+5. Publish to **Production** so refresh tokens do not expire after 7 days.
+6. Create **OAuth client ID** credentials.
+7. Application type: **Web application**.
+8. Authorized redirect URIs (add both):
    - `http://localhost:3000/oauth/google/callback`
-   - `https://<VERCEL_PROJECT_NAME>.vercel.app/oauth/google/callback`
-7. Scope used by this app:
+   - `https://ga4-mcp-XXXXXXXX-uc.a.run.app/oauth/google/callback`  
+     (use the real Cloud Run URL after the first deploy)
+9. Scope used by this app:
 
-   ```text
-   https://www.googleapis.com/auth/analytics.readonly
-   ```
+```text
+https://www.googleapis.com/auth/analytics.readonly
+```
 
-8. Copy the client ID and secret into environment variables.
+10. Copy the client ID and client secret. Do not commit them.
 
-Then visit `/oauth/google`, enter `MCP_AUTH_TOKEN`, and sign in with the Google account that owns your GA4 properties.
+The Google account you authorize must already have access to the GA4 properties Claude should query.
 
-- Locally the refresh token is written to `.env.local`.
-- On Vercel, paste `GOOGLE_REFRESH_TOKEN` into project env vars and **redeploy**.
+## Deploy to Cloud Run
+
+Default service name: `ga4-mcp`. Default region: `us-central1`.
+
+```powershell
+.\scripts\cloud-run-deploy.ps1 -ProjectId YOUR_PROJECT_ID -Region us-central1
+```
+
+The script prints:
+
+```text
+https://ga4-mcp-XXXXXXXX-uc.a.run.app
+https://ga4-mcp-XXXXXXXX-uc.a.run.app/ga4mcp
+https://ga4-mcp-XXXXXXXX-uc.a.run.app/health
+https://ga4-mcp-XXXXXXXX-uc.a.run.app/oauth/google/callback
+```
+
+The service is deployed **allow unauthenticated**. That is required. Claude.ai connects from Anthropic (`160.79.104.0/21`). Auth is `MCP_AUTH_TOKEN` / MCP OAuth, not Cloud Run IAM.
+
+### Set environment variables
+
+```powershell
+.\scripts\cloud-run-set-env.ps1 `
+  -ProjectId YOUR_PROJECT_ID `
+  -AppBaseUrl "https://ga4-mcp-XXXXXXXX-uc.a.run.app" `
+  -GoogleClientId "....apps.googleusercontent.com" `
+  -GoogleClientSecret "...." `
+  -McpAuthToken "a-long-random-string"
+```
+
+Then add the Cloud Run callback URL to the Google OAuth client if you have not already.
+
+### Connect Google
+
+1. Open `https://ga4-mcp-XXXXXXXX-uc.a.run.app/oauth/google`
+2. Enter `MCP_AUTH_TOKEN`
+3. Sign in with your Google account
+4. Copy `GOOGLE_REFRESH_TOKEN` from the success page
+5. Set it and let Cloud Run start a new revision:
+
+```powershell
+.\scripts\cloud-run-set-env.ps1 `
+  -ProjectId YOUR_PROJECT_ID `
+  -AppBaseUrl "https://ga4-mcp-XXXXXXXX-uc.a.run.app" `
+  -GoogleClientId "....apps.googleusercontent.com" `
+  -GoogleClientSecret "...." `
+  -McpAuthToken "a-long-random-string" `
+  -GoogleRefreshToken "1//...."
+```
+
+Cloud Run cannot write env vars from inside the container. Same rule as any serverless host.
+
+### Confirm the service
+
+```text
+https://ga4-mcp-XXXXXXXX-uc.a.run.app/health
+```
+
+must return:
+
+```json
+{"status":"ok"}
+```
 
 ## Environment variables
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `APP_BASE_URL` | Yes | Public origin, no trailing slash. Production: `https://<VERCEL_PROJECT_NAME>.vercel.app` |
+| `APP_BASE_URL` | Yes | Cloud Run origin, no trailing slash |
 | `GOOGLE_CLIENT_ID` | Yes | Google OAuth web client |
 | `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth web client secret |
 | `GOOGLE_REDIRECT_URI` | No | Defaults to `${APP_BASE_URL}/oauth/google/callback` |
 | `MCP_AUTH_TOKEN` | Yes | Operator setup token for Google OAuth and Claude MCP consent |
 | `GOOGLE_REFRESH_TOKEN` | After Google OAuth | Long-lived Google token |
 | `OAUTH_STATE_SECRET` | No | Signs Google OAuth state cookies |
-| `MCP_TOKEN_SECRET` | No | Signs MCP access/refresh JWTs. Defaults to `MCP_AUTH_TOKEN` |
-| `MCP_OAUTH_CLIENT_ID` | No | Only if using Claude.ai Advanced Settings confidential client |
-| `MCP_OAUTH_CLIENT_SECRET` | No | Pair for the optional confidential client |
+| `MCP_TOKEN_SECRET` | No | Signs MCP JWTs. Defaults to `MCP_AUTH_TOKEN` |
+| `MCP_OAUTH_CLIENT_ID` | No | Only for Claude.ai Advanced Settings confidential client |
+| `MCP_OAUTH_CLIENT_SECRET` | No | Pair for that optional client |
 
-## Vercel
+Set these on the Cloud Run service. Do not put them in Git.
 
-```bash
-npm i -g vercel
-vercel
-vercel --prod
-```
-
-Add the environment variables in the Vercel project. After the first Google OAuth on production, set `GOOGLE_REFRESH_TOKEN` and redeploy.
-
-**Disable Deployment Protection / Vercel Authentication on production.** Claude.ai connects from Anthropic's network (`160.79.104.0/21`). If Vercel SSO sits in front of `/ga4mcp`, the connector cannot connect.
-
-Production URLs:
-
-```text
-https://<VERCEL_PROJECT_NAME>.vercel.app/ga4mcp
-https://<VERCEL_PROJECT_NAME>.vercel.app/oauth/google/callback
-https://<VERCEL_PROJECT_NAME>.vercel.app/health
-```
-
-A custom domain is optional later. Keep using `APP_BASE_URL` so no code change is required.
+Optional Console path: **Cloud Run → ga4-mcp → Edit & deploy new revision → Variables & secrets**.
 
 ## Claude.ai Custom Connector
 
-1. Deploy to Vercel and confirm `https://<VERCEL_PROJECT_NAME>.vercel.app/health` returns `{"status":"ok"}`.
-2. Connect Google at `https://<VERCEL_PROJECT_NAME>.vercel.app/oauth/google`.
-3. Put `GOOGLE_REFRESH_TOKEN` in Vercel env and redeploy.
-4. In Claude.ai open **Customize → Connectors → Add custom connector**.
-5. Name: `GA4 Analytics`
-6. URL:
+1. Confirm `/health` returns `{"status":"ok"}`.
+2. Finish Google OAuth and set `GOOGLE_REFRESH_TOKEN`.
+3. In Claude.ai open **Customize → Connectors → Add custom connector**.
+4. Name: `GA4 Analytics`
+5. URL:
 
-   ```text
-   https://<VERCEL_PROJECT_NAME>.vercel.app/ga4mcp
-   ```
+```text
+https://ga4-mcp-XXXXXXXX-uc.a.run.app/ga4mcp
+```
 
-7. Leave Advanced OAuth Client ID / Secret empty. Claude uses CIMD against this server's authorization endpoints.
-8. Click **Add**.
-9. Enable the connector in the chat **+ → Connectors** menu.
-10. The first GA4 tool call shows a **Connect** card. Enter `MCP_AUTH_TOKEN` on this app's consent page (not your Google password).
-11. Ask: **How many users did I have yesterday?**
+6. Leave Advanced OAuth Client ID / Secret empty.
+7. Click **Add**.
+8. Enable the connector in **+ → Connectors**.
+9. The first GA4 tool call shows **Connect**. Enter `MCP_AUTH_TOKEN` on this app’s consent page (not your Google password).
+10. Ask: **How many users did I have yesterday?**
 
-`initialize` and `tools/list` are public so Claude can discover tools. `tools/call` returns HTTP 401 with `WWW-Authenticate` until MCP OAuth completes.
+## Manual gcloud (if you do not want the scripts)
+
+```powershell
+gcloud artifacts repositories create ga4-mcp --repository-format=docker --location=us-central1
+gcloud builds submit --config cloudbuild.yaml --substitutions=_REGION=us-central1
+gcloud run services describe ga4-mcp --region us-central1 --format="value(status.url)"
+gcloud run services update ga4-mcp --region us-central1 --update-env-vars APP_BASE_URL=https://...,GOOGLE_CLIENT_ID=...,GOOGLE_CLIENT_SECRET=...,GOOGLE_REDIRECT_URI=https://.../oauth/google/callback,MCP_AUTH_TOKEN=...
+```
 
 ## Security
 
 - Never log Google tokens, authorization codes, client secrets, or MCP JWTs.
 - MCP tools never return secrets.
-- Google access tokens are not stored; only `GOOGLE_REFRESH_TOKEN` persists in env vars.
-- Do not put secrets in Git.
+- Only `GOOGLE_REFRESH_TOKEN` is persisted, as a Cloud Run env var.
+- Cloud Run ingress is public so Claude can connect. Do not also put a Cloud IAP / IAM login in front of `/ga4mcp`.
+- Generate a long random `MCP_AUTH_TOKEN`.
 
 ## Dates
 
@@ -148,8 +237,18 @@ Passed to GA4 unchanged: `today`, `yesterday`, `7daysAgo`, `30daysAgo`, `90daysA
 ## Known limitations
 
 - One Google account and one refresh token.
-- Vercel cannot write env vars at runtime; paste `GOOGLE_REFRESH_TOKEN` and redeploy.
+- Cloud Run cannot persist a file or mutate env vars at runtime; set `GOOGLE_REFRESH_TOKEN` and deploy a new revision.
 - Google Testing-mode refresh tokens expire after about 7 days.
 - Realtime data is roughly the last 30 minutes.
 - Report size is capped at 10,000 rows.
-- I cannot complete the live Claude.ai click-through from this repository; that requires your Claude and Vercel accounts.
+- Cold starts can add a few seconds when `min-instances` is 0.
+
+## Files added for Cloud Run
+
+| File | Purpose |
+| --- | --- |
+| `Dockerfile` | Production Next.js standalone image |
+| `cloudbuild.yaml` | Build image and deploy Cloud Run |
+| `scripts/cloud-run-setup.ps1` | Enable APIs and Artifact Registry |
+| `scripts/cloud-run-deploy.ps1` | Build and deploy |
+| `scripts/cloud-run-set-env.ps1` | Set Cloud Run env vars |

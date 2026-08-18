@@ -43,8 +43,8 @@ export default function HomePage() {
       </p>
       <p style={{ color: "#666" }}>
         Claude.ai authenticates with MCP OAuth (not Google). Google OAuth only
-        authorizes this server to read your GA4 properties. Disable Vercel
-        Deployment Protection on production so Anthropic can reach{" "}
+        authorizes this server to read your GA4 properties. The Cloud Run
+        service must allow unauthenticated ingress so Anthropic can reach{" "}
         <code>/ga4mcp</code>.
       </p>
     </main>
