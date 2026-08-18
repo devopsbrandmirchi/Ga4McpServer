@@ -1,0 +1,8 @@
+{
+  "framework": "nextjs",
+  "functions": {
+    "src/app/ga4mcp/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
