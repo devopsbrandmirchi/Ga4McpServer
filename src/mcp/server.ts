@@ -1,6 +1,12 @@
 import { createMcpHandler } from "mcp-handler";
 import { logger } from "@/lib/logger";
 import { extractMcpToken, isAuthorizedToken } from "@/mcp/auth";
+import {
+  mcpOptionsResponse,
+  mcpProbeGetResponse,
+  toJsonRpcResponse,
+  withStreamableAccept,
+} from "@/mcp/http";
 import { wwwAuthenticateHeader } from "@/mcp/oauth/metadata";
 import { registerListPropertiesTool } from "@/mcp/tools/list-properties";
 import { registerMetadataTool } from "@/mcp/tools/metadata";
@@ -77,6 +83,16 @@ export function createGa4McpHandler() {
   const handler = createInnerHandler();
 
   return async (req: Request): Promise<Response> => {
+    if (req.method === "OPTIONS") {
+      return mcpOptionsResponse();
+    }
+    if (req.method === "GET") {
+      return mcpProbeGetResponse();
+    }
+    if (req.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+
     if (req.method === "POST") {
       const token = extractMcpToken(req);
       const authed = await isAuthorizedToken(token);
@@ -93,6 +109,6 @@ export function createGa4McpHandler() {
       }
     }
 
-    return handler(req);
+    return toJsonRpcResponse(await handler(withStreamableAccept(req)));
   };
 }

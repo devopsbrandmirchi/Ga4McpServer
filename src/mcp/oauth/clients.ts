@@ -4,6 +4,9 @@ import { tokensEqual } from "@/lib/secure-compare";
 import { signJwt, verifyJwt } from "@/mcp/oauth/jwt";
 
 export const CLAUDE_AI_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+export const CLAUDE_COM_CALLBACK = "https://claude.com/api/mcp/auth_callback";
+
+const CLAUDE_HOSTS = new Set(["claude.ai", "www.claude.ai", "claude.com", "www.claude.com"]);
 
 export interface ResolvedClient {
   clientId: string;
@@ -106,6 +109,23 @@ function resolveDcrClient(clientId: string): ResolvedClient | undefined {
   }
 }
 
+function resolveClaudeClient(clientId: string): ResolvedClient | undefined {
+  try {
+    const url = new URL(clientId);
+    if (url.protocol !== "https:" || !CLAUDE_HOSTS.has(url.hostname)) {
+      return undefined;
+    }
+    return {
+      clientId,
+      redirectUris: [CLAUDE_AI_CALLBACK, CLAUDE_COM_CALLBACK],
+      tokenEndpointAuthMethod: "none",
+      displayHost: url.host,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function resolveClient(clientId: string): Promise<ResolvedClient> {
   const preRegistered = resolvePreRegistered(clientId);
   if (preRegistered) {
@@ -115,6 +135,11 @@ export async function resolveClient(clientId: string): Promise<ResolvedClient> {
   const dcr = resolveDcrClient(clientId);
   if (dcr) {
     return dcr;
+  }
+
+  const claude = resolveClaudeClient(clientId);
+  if (claude) {
+    return claude;
   }
 
   if (clientId.startsWith("https://")) {

@@ -4,7 +4,12 @@ import { POST as postRegister } from "@/app/oauth/mcp/register/route";
 import { POST as postToken } from "@/app/oauth/mcp/token/route";
 import { GET as getAsMetadata } from "@/app/.well-known/oauth-authorization-server/route";
 import { GET as getPrm } from "@/app/.well-known/oauth-protected-resource/ga4mcp/route";
-import { CLAUDE_AI_CALLBACK, isRedirectAllowed, redirectUriMatches } from "@/mcp/oauth/clients";
+import {
+  CLAUDE_AI_CALLBACK,
+  isRedirectAllowed,
+  redirectUriMatches,
+  resolveClient,
+} from "@/mcp/oauth/clients";
 import { authorizationServerMetadata, protectedResourceMetadata, wwwAuthenticateHeader } from "@/mcp/oauth/metadata";
 import { issueAccessToken } from "@/mcp/oauth/tokens";
 import { isAuthorizedToken, verifyMcpToken } from "@/mcp/auth";
@@ -121,6 +126,21 @@ describe("authorize + token", () => {
     expect(token.status).toBe(200);
     expect(body.token_type).toBe("Bearer");
     await expect(isAuthorizedToken(body.access_token)).resolves.toBe(true);
+
+    const jsonToken = await postToken(
+      new Request("http://localhost:3000/oauth/mcp/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+          client_id: registration.client_id,
+          code_verifier: verifier,
+        }),
+      }),
+    );
+    expect(jsonToken.status).toBe(200);
   });
 
   it("shows the consent page for a valid authorize GET", async () => {
@@ -209,6 +229,33 @@ describe("lazy MCP auth", () => {
       }),
     );
     expect(listed.status).not.toBe(401);
+    expect(listed.headers.get("content-type")).toContain("application/json");
+
+    const jsonOnly = await handler(
+      new Request("http://localhost:3000/ga4mcp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "test", version: "1.0.0" },
+          },
+        }),
+      }),
+    );
+    expect(jsonOnly.status).toBe(200);
+    expect(jsonOnly.headers.get("content-type")).toContain("application/json");
+
+    const probe = await handler(new Request("http://localhost:3000/ga4mcp", { method: "GET" }));
+    expect(probe.status).toBe(200);
+    expect(probe.headers.get("content-type")).toContain("text/event-stream");
 
     const req = new Request("http://localhost:3000/ga4mcp", {
       headers: { Authorization: "Bearer test-mcp-token" },
@@ -227,8 +274,17 @@ describe("CIMD fetch", () => {
     vi.unstubAllGlobals();
   });
 
+  it("accepts Claude client IDs without fetching their metadata document", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const client = await resolveClient("https://claude.ai/oauth/claude-client-metadata");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(client.displayHost).toBe("claude.ai");
+    expect(isRedirectAllowed(client, CLAUDE_AI_CALLBACK)).toBe(true);
+  });
+
   it("accepts a self-referential client_id metadata document", async () => {
-    const clientId = "https://claude.ai/oauth/claude-client-metadata";
+    const clientId = "https://example.com/oauth/client-metadata";
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -243,9 +299,8 @@ describe("CIMD fetch", () => {
       ),
     );
 
-    const { resolveClient } = await import("@/mcp/oauth/clients");
     const client = await resolveClient(clientId);
-    expect(client.displayHost).toBe("claude.ai");
+    expect(client.displayHost).toBe("example.com");
     expect(isRedirectAllowed(client, CLAUDE_AI_CALLBACK)).toBe(true);
   });
 });

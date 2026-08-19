@@ -35,21 +35,54 @@ export function OPTIONS() {
   return corsOptions();
 }
 
-export async function POST(req: Request) {
+async function readTokenParams(req: Request): Promise<URLSearchParams> {
   const contentType = req.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/x-www-form-urlencoded")) {
-    return oauthError(
-      "invalid_request",
-      "The token endpoint requires application/x-www-form-urlencoded.",
-      415,
-    );
+  if (contentType.includes("application/json")) {
+    const body = (await req.json()) as Record<string, unknown>;
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(body)) {
+      if (value !== undefined && value !== null) {
+        params.set(key, String(value));
+      }
+    }
+    return params;
+  }
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data") ||
+    !contentType
+  ) {
+    const form = await req.formData();
+    const params = new URLSearchParams();
+    for (const [key, value] of form.entries()) {
+      if (typeof value === "string") {
+        params.set(key, value);
+      }
+    }
+    return params;
+  }
+  throw new Error("unsupported_content_type");
+}
+
+export async function POST(req: Request) {
+  let params: URLSearchParams;
+  try {
+    params = await readTokenParams(req);
+  } catch (error) {
+    if (error instanceof Error && error.message === "unsupported_content_type") {
+      return oauthError(
+        "invalid_request",
+        "The token endpoint accepts application/x-www-form-urlencoded or application/json.",
+        415,
+      );
+    }
+    return oauthError("invalid_request", "The token request body could not be parsed.");
   }
 
-  const form = await req.formData();
-  const grantType = String(form.get("grant_type") ?? "");
+  const grantType = params.get("grant_type") ?? "";
   const basic = extractBasicClientSecret(req);
-  const clientId = String(form.get("client_id") ?? basic.clientId ?? "");
-  const clientSecret = String(form.get("client_secret") ?? basic.clientSecret ?? "") || undefined;
+  const clientId = params.get("client_id") ?? basic.clientId ?? "";
+  const clientSecret = params.get("client_secret") || basic.clientSecret || undefined;
 
   if (!clientId) {
     return oauthError("invalid_client", "client_id is required.", 401);
@@ -62,9 +95,9 @@ export async function POST(req: Request) {
     }
 
     if (grantType === "authorization_code") {
-      const code = String(form.get("code") ?? "");
-      const redirectUri = String(form.get("redirect_uri") ?? "");
-      const codeVerifier = String(form.get("code_verifier") ?? "");
+      const code = params.get("code") ?? "";
+      const redirectUri = params.get("redirect_uri") ?? "";
+      const codeVerifier = params.get("code_verifier") ?? "";
       const payload = readAuthorizationCode(code);
       if (payload.client_id !== clientId || payload.redirect_uri !== redirectUri) {
         return oauthError("invalid_grant", "The authorization code does not match this client.");
@@ -77,7 +110,7 @@ export async function POST(req: Request) {
     }
 
     if (grantType === "refresh_token") {
-      const refreshToken = String(form.get("refresh_token") ?? "");
+      const refreshToken = params.get("refresh_token") ?? "";
       const payload = readRefreshToken(refreshToken);
       if (payload.client_id !== clientId) {
         return oauthError("invalid_grant", "The refresh token does not match this client.");
@@ -87,7 +120,16 @@ export async function POST(req: Request) {
     }
 
     return oauthError("unsupported_grant_type", "Use authorization_code or refresh_token.");
-  } catch {
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown";
+    logger.error("MCP token exchange failed", { grantType, reason });
+    if (
+      reason.includes("Unknown OAuth client") ||
+      reason.includes("metadata") ||
+      reason.includes("self-referential")
+    ) {
+      return oauthError("invalid_client", "The OAuth client could not be resolved.", 401);
+    }
     return oauthError("invalid_grant", "The authorization code or refresh token is not valid.");
   }
 }
